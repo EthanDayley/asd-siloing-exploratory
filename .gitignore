@@ -162,3 +162,10 @@ cython_debug/
 
 # vscode workspace
 *.code-workspace
+
+word_embeddings/*.bin
+journal_classification/*
+download_abstracts/*
+search/*
+
+db_connection_params.csv
