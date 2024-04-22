@@ -1,9 +1,11 @@
 import urllib.request
 import xml.etree.ElementTree as ET
 import os
+import datetime
 import time
 import tarfile
 import string
+import socket
 import re
 import mysql.connector
 import pandas as pd
@@ -11,7 +13,7 @@ import shutil
 
 def get_href_by_pmc_id(pmc_id, doc_info_url):
     # fetch from API
-    doc_info = urllib.request.urlopen(DOC_INFO_URL.format(pmc_id)).read()
+    doc_info = urllib.request.urlopen(DOC_INFO_URL.format(pmc_id), timeout=20).read()
     
     # parse XML
     doc_info_tree = ET.ElementTree(ET.fromstring(doc_info))
@@ -25,7 +27,16 @@ def get_href_by_pmc_id(pmc_id, doc_info_url):
 def fetch_article_archive(article_href, filepath):
     # returns time to fetch archive in seconds
     t0 = time.time()
-    urllib.request.urlretrieve(article_href, filepath)
+    try:
+        urllib.request.urlretrieve(article_href, filepath)
+    except TimeoutError:
+        print('initial request timed out, trying again')
+        try:
+            urllib.request.urlretrieve(article_href, filepath)
+        except TimeoutError as e:
+            print('second request timed out')
+            raise e
+
     t1 = time.time()
     return t1 - t0
 
@@ -61,20 +72,41 @@ def get_cleaned_abstract(full_extracted_path):
     abstr_text = re.sub(f"[{re.escape(string.punctuation)}]", "", abstr_text)
     return abstr_text
 
+def record_failed_download(cnx, cursor, pmc_id, message):
+    query = 'INSERT INTO failed_downloads (pmc_id, message) VALUES ("{0}", "{1}")'.format(pmc_id, message)
+
+    # insert row into database
+    print('inserting failed download recording into database')
+    try:
+        cursor.execute(query)
+        cnx.commit()
+        print('done inserting')
+        return True
+    except:
+        msg = '{0} Failed to insert record into database for PMC ID {1}'.format(NOTICE_PREFIX, pmc_id)
+        log_file.write(msg+'\n')
+        print(msg)
+        print()
+        return False
+
 if __name__ == '__main__':
-    PMC_ID_PATH = os.path.join('..', 'search', 'article-test-subset.txt')
-    OUTPUT_PATH = os.path.join('..', 'download_abstracts')
+    PMC_ID_PATH = os.path.join('search', 'article-test-subset.txt')
+    OUTPUT_PATH = os.path.join('download_abstracts')
     TMP_PATH = 'tmp'
     NOTICE_PREFIX = 'NOTICE: '
     LOG_PATH = os.path.join(OUTPUT_PATH, 'log.txt')
+    print(OUTPUT_PATH)
 
     DOC_INFO_URL = 'https://www.ncbi.nlm.nih.gov/pmc/utils/oa/oa.fcgi?id={0}'
+
+    # set up default download timeout
+    socket.setdefaulttimeout(120)
 
     # open log files
     log_file = open(LOG_PATH, 'a')
 
     # connect to database
-    DB_PARAM_FILEPATH = os.path.join('..', 'db_connection_params.csv')
+    DB_PARAM_FILEPATH = os.path.join('db_connection_params.csv')
     db_params = pd.read_csv(DB_PARAM_FILEPATH)
     db_host = db_params.host.iloc[0]
     db_user = db_params.username.iloc[0]
@@ -97,13 +129,23 @@ if __name__ == '__main__':
 
     for pmc_id in pmc_ids:
         print('Processing "{0}"'.format(pmc_id))
+        print('timestamp: {0}'.format(datetime.datetime.now()))
 
-        # check if record is already present in database
+        # check if record is already downloaded
         query = 'SELECT pmc_id FROM {0} WHERE pmc_id = "{1}"'.format(db_table, pmc_id)
         cursor.execute(query)
         row_count = cursor.rowcount
         if row_count != 0:
             print('{0} PMC_ID: "{1}" already present, skipping'.format(NOTICE_PREFIX, pmc_id))
+            print()
+            continue
+    
+        # check if record already failed to download
+        query = 'SELECT pmc_id FROM failed_downloads WHERE pmc_id = "{0}"'.format(pmc_id)
+        cursor.execute(query)
+        row_count = cursor.rowcount
+        if row_count != 0:
+            print('{0} PMC_ID: "{1}" already failed to download, skipping'.format(NOTICE_PREFIX, pmc_id))
             print()
             continue
 
@@ -115,6 +157,7 @@ if __name__ == '__main__':
             msg = '{0} Failed to fetch article href for PMC Id "{1}"'.format(NOTICE_PREFIX, pmc_id)
             log_file.write(msg+'\n')
             print(msg)
+            record_failed_download(cnx, cursor, pmc_id, msg)
             print()
             continue
 
@@ -127,6 +170,7 @@ if __name__ == '__main__':
             msg = '{0} Failed to download article archive for PMC ID {1}'.format(NOTICE_PREFIX, pmc_id)
             log_file.write(msg+'\n')
             print(msg)
+            record_failed_download(cnx, cursor, pmc_id, msg)
             print()
             continue
         print('download complete in {0} seconds.'.format(dt))
@@ -140,6 +184,7 @@ if __name__ == '__main__':
             msg = '{0} Failed to extract article archive for PMC ID {1}'.format(NOTICE_PREFIX, pmc_id)
             log_file.write(msg+'\n')
             print(msg)
+            record_failed_download(cnx, cursor, pmc_id, msg)
             print()
             continue
         print('extraction complete in {0} seconds'.format(dt))
@@ -152,6 +197,7 @@ if __name__ == '__main__':
             msg = '{0} Failed to extract cleaned abstract for PMC ID {1}'.format(NOTICE_PREFIX, pmc_id)
             log_file.write(msg+'\n')
             print(msg)
+            record_failed_download(cnx, cursor, pmc_id, msg)
             print()
             continue
         print('done cleaning abstract')
@@ -166,6 +212,7 @@ if __name__ == '__main__':
             msg = '{0} Failed to insert row into database for PMC ID {1}'.format(NOTICE_PREFIX, pmc_id)
             log_file.write(msg+'\n')
             print(msg)
+            record_failed_download(cnx, cursor, pmc_id, msg)
             print()
             continue
         print('done inserting')
