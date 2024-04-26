@@ -5,7 +5,7 @@ import pandas as pd
 
 if __name__ == '__main__':
     # set up parameters
-    NLM_CATALOG_RES_PATH = os.path.join('journal_classification', 'nlmcatalog_result.xml')
+    NLM_CATALOG_RES_PATH = os.path.join('journal_classification', 'nlm_catalog_results')
 
     # connect to database
     DB_PARAM_FILEPATH = os.path.join('db_connection_params.csv')
@@ -21,42 +21,66 @@ if __name__ == '__main__':
     cursor = cnx.cursor(buffered=True)
     print('Done connecting to database.')
 
-    # load nlm catalog result
-    print('loading nlm catalog result')
-    tree = ET.ElementTree(file=NLM_CATALOG_RES_PATH)
-    tree_root = tree.getroot()
-    print('done loading nlm catalog result')
+    # load list of files in directory
+    filenames = os.listdir(NLM_CATALOG_RES_PATH)
 
-    # iterate through sources
-    for record in tree_root:
-        ncbi_source_id = str(record.attrib['ID'])
-        nlm_catalog_record = record.find('NLMCatalogRecord')
-        medline_ta = nlm_catalog_record.find('MedlineTA').text
-        try:
-            for mesh_heading in nlm_catalog_record.find('MeshHeadingList'):
-                try:
-                    descriptor = mesh_heading.find('DescriptorName').text
+    medline_ta_list = []
 
+    for filename in filenames:
+        filepath = os.path.join(NLM_CATALOG_RES_PATH, filename)
+
+        # load nlm catalog result
+        print()
+        print('loading nlm catalog result ({0})'.format(filename))
+        tree = ET.ElementTree(file=filepath)
+        tree_root = tree.getroot()
+        print('done loading nlm catalog result')
+
+        # iterate through sources
+        for record in tree_root:
+            try:
+                ncbi_source_id = str(record.attrib['ID'])
+            except:
+                print('Failed to extract ncbi_source_id from {0}'.format(record))
+                continue
+            try:
+                nlm_catalog_record = record.find('NLMCatalogRecord')
+                medline_ta = nlm_catalog_record.find('MedlineTA').text
+                medline_ta_list.append(medline_ta)
+            except:
+                print('Failed to extract medline_ta from {0}'.format(nlm_catalog_record))
+                continue
+            try:
+                for mesh_heading in nlm_catalog_record.find('MeshHeadingList'):
                     try:
-                        # check if record is already downloaded
-                        query = 'SELECT ncbi_source_id FROM source_descriptors WHERE medline_ta = "{0}" AND descriptor = "{1}"'.format(medline_ta, descriptor)
-                        cursor.execute(query)
-                        row_count = cursor.rowcount
-                        if row_count != 0:
+                        descriptor = mesh_heading.find('DescriptorName').text
+
+                        try:
+                            # check if record is already downloaded
+                            query = 'SELECT ncbi_source_id FROM source_descriptors WHERE medline_ta = "{0}" AND descriptor = "{1}"'.format(medline_ta, descriptor)
+                            cursor.execute(query)
+                            row_count = cursor.rowcount
+                            if row_count != 0:
+                                print('Record with medline_ta = "{0}" and descriptor = "{1}" already present, skipping'.format(medline_ta, descriptor))
+                                continue
+
+                            query = '''INSERT INTO source_descriptors (ncbi_source_id, medline_ta, descriptor)
+                                       VALUES ("{0}", "{1}", "{2}")
+                                    '''.format(ncbi_source_id, medline_ta, descriptor)
+                            print('Inserting record with medline_ta = "{0}" and descriptor = "{1}"'.format(medline_ta, descriptor))
+                            cursor.execute(query)
+                            cnx.commit()
+
+                        except Exception as e:
+                            print('Unable to INSERT/UPDATE with following query: \n{0}'.format(query))
+                            print(e)
                             continue
-
-                        query = '''INSERT INTO source_descriptors (ncbi_source_id, medline_ta, descriptor)
-                                   VALUES ("{0}", "{1}", "{2}")
-                                '''.format(ncbi_source_id, medline_ta, descriptor)
-                        cursor.execute(query)
-                        cnx.commit()
-
-                    except Exception as e:
-                        print('Unable to INSERT/UPDATE with following query: \n{0}'.format(query))
-                        print(e)
+                    except:
                         continue
-                except:
-                    continue
-        except TypeError:
-            continue
+            except TypeError as e:
+                print('Skipping entry with medline_ta "{0}" from file "{1}"'.format(medline_ta, filepath))
+                print('Exception: "{0}"'.format(e))
+                continue
+        print()
     print('Done')
+    print('{0} distinct medline_ta values processed'.format(len(set(medline_ta_list))))
