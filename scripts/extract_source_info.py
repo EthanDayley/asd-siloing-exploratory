@@ -45,10 +45,19 @@ if __name__ == '__main__':
                 continue
             try:
                 nlm_catalog_record = record.find('NLMCatalogRecord')
+            except:
+                print('Failed to extract nlm catalog record from {0}'.format(record))
+                continue
+            try:
                 medline_ta = nlm_catalog_record.find('MedlineTA').text
                 medline_ta_list.append(medline_ta)
             except:
                 print('Failed to extract medline_ta from {0}'.format(nlm_catalog_record))
+                continue
+            try:
+                full_source_title = nlm_catalog_record.find('TitleMain').find('Title').text
+            except:
+                print('Failed to extract full source title from {0}'.format(nlm_catalog_record))
                 continue
             try:
                 for mesh_heading in nlm_catalog_record.find('MeshHeadingList'):
@@ -64,9 +73,9 @@ if __name__ == '__main__':
                                 print('Record with medline_ta = "{0}" and descriptor = "{1}" already present, skipping'.format(medline_ta, descriptor))
                                 continue
 
-                            query = '''INSERT INTO source_descriptors (ncbi_source_id, medline_ta, descriptor)
-                                       VALUES ("{0}", "{1}", "{2}")
-                                    '''.format(ncbi_source_id, medline_ta, descriptor)
+                            query = '''INSERT INTO source_descriptors (ncbi_source_id, medline_ta, descriptor, source_title)
+                                       VALUES ("{0}", "{1}", "{2}", "{3}")
+                                    '''.format(ncbi_source_id, medline_ta, descriptor, full_source_title)
                             print('Inserting record with medline_ta = "{0}" and descriptor = "{1}"'.format(medline_ta, descriptor))
                             cursor.execute(query)
                             cnx.commit()
